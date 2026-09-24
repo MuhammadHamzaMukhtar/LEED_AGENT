@@ -174,3 +174,94 @@ Done when: after restarting Claude Code, `/agents` shows both agents.
 - Update README.md: how to run the script, how to use /find-leads,
   what each website status means, demo key limits
 - Final commit
+
+## Phase 7: Dashboard (`dashboard.py`)
+- Add `streamlit`, `pandas`, and `openpyxl` to requirements.txt and install them
+- Bundle a free, offline country/state/city dataset as a local JSON file
+  (e.g. the open-source "countries+states+cities" dataset, MIT licensed) in
+  `data/locations.json`. No external API, no key, no cost, no quota risk.
+- Bundle a preset list of everyday UK local-business categories, grouped
+  by sector, as a local Python list/JSON in the same `data/` folder as
+  the location dataset:
+  - Health & wellbeing: GP surgery, dentist, optician, pharmacy,
+    physiotherapist, chiropractor, vet, gym, yoga studio, massage
+    therapist, osteopath, nutritionist
+  - Food & drink: cafe, restaurant, takeaway, pub, bakery, butcher,
+    caterer, coffee shop
+  - Home trades: plumber, electrician, builder, roofer, painter &
+    decorator, gardener/landscaper, locksmith, cleaner, handyman, pest
+    control, removals
+  - Personal care & beauty: hair salon, barber, nail salon, beauty
+    salon, tattoo studio, tanning salon
+  - Professional services: accountant, solicitor, estate agent,
+    insurance broker, financial advisor, recruitment agency,
+    photographer
+  - Automotive: mechanic, MOT centre, car wash, car dealership, tyre
+    shop, driving instructor
+  - Retail & other: florist, pet shop, charity shop, dry cleaner,
+    bookshop, hardware store
+- Create `dashboard.py` using Streamlit with three tabs: "New Search",
+  "Browse Results", and "Pitches".
+
+  ### Tab 1: New Search
+  - Country dropdown (from the bundled dataset)
+  - City dropdown, filtered to the chosen country (from the same dataset)
+  - Optional free-text town/area box, for places finer-grained than the
+    bundled city list (e.g. "Hebden Bridge" inside "West Yorkshire")
+  - Alternative toggle: "Search whole city" vs "Search a specific
+    town/area within it" — whole-city just uses the city name as-is
+  - Categories: multi-select checklist from the bundled preset list, plus
+    an "add custom category" text box for anything not listed
+  - Search depth as a pill choice, not a slider: Quick (3 requests),
+    Standard (5), Thorough (10), or Full -- Full auto-calculates
+    categories_count x 3, since 3 requests (60 results) is Google's own
+    hard cap per category+location search, so Full always means "every
+    result Google has," never an arbitrary number
+  - "Run search" button: calls the existing search_places /
+    check_website / score_lead functions directly (no API key ever
+    shown or logged), shows a progress spinner, then saves a CSV to
+    leads/ exactly like the CLI does
+  - Clear warning near the button showing how many requests this run
+    will use, so nobody accidentally blows the daily demo quota
+
+  ### Tab 2: Browse Results
+  - Sidebar: pick a CSV from the `leads/` folder (newest first)
+  - Sidebar filters: website status (multi-select), category (multi-select),
+    minimum score (slider)
+  - Top row metric cards: total leads, NO_WEBSITE count, SOCIAL_ONLY count,
+    BROKEN + PARKED count, average score
+  - Bar chart: number of leads per website status
+  - Bar chart: number of leads per category
+  - Table of filtered leads sorted by score (highest first), showing
+    name, address, category, website_status, phone, rating, reviews,
+    score, website, maps_url (rating/reviews may be blank -- the demo
+    key often doesn't return them)
+  - Make website and maps_url clickable links
+  - Download buttons for the filtered table: CSV and real .xlsx (via
+    openpyxl)
+  - If no CSV exists in leads/, show a friendly message pointing to the
+    "New Search" tab
+
+  ### Tab 3: Pitches
+  - Pick a verified/scored CSV, same picker as Tab 2
+  - Shows the leads with score >= 50 (max 20), same rule as the
+    pitch-writer agent from Phase 5
+  - "Generate pitches" button: runs the same pitch-writing logic used by
+    the pitch-writer agent (as a shared Python function, not a duplicate
+    copy) and saves a `-pitches.md` file to leads/, same as today
+  - Read-only view of each generated pitch (business name, status,
+    pitch text) with a "copy to clipboard" button per pitch
+  - Same legal reminder shown at the top: check Companies House, PECR
+    consent rules for sole traders/partnerships
+  - No email sending, no contacting businesses from the app — pitches are
+    for you to copy and send yourself
+
+- Do not show businesses on a map (Google Places terms)
+- The only Google API calls happen from the "New Search" tab's button,
+  through the same request-limit-checked functions as the CLI; nothing
+  else in the dashboard ever calls the API
+- Add run instructions to README.md: `streamlit run dashboard.py`
+Done when: `streamlit run dashboard.py` opens in my browser, I can pick a
+country and city from dropdowns, select categories from a checklist, run
+a small search, see it appear in Browse Results, export it as CSV and
+.xlsx, and generate + read pitches for the top leads in the Pitches tab.
