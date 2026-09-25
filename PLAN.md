@@ -212,17 +212,27 @@ Done when: after restarting Claude Code, `/agents` shows both agents.
     town/area within it" — whole-city just uses the city name as-is
   - Categories: multi-select checklist from the bundled preset list, plus
     an "add custom category" text box for anything not listed
-  - Search depth as a pill choice, not a slider: Quick (3 requests),
-    Standard (5), Thorough (10), or Full -- Full auto-calculates
-    categories_count x 3, since 3 requests (60 results) is Google's own
-    hard cap per category+location search, so Full always means "every
-    result Google has," never an arbitrary number
+  - Target leads as a number input (e.g. 60 or 100), not a slider or
+    preset tier: converts to requests needed (leads / 20, capped at
+    categories_count x 3, since 60 results / 3 requests per category is
+    Google's own hard cap). Shows a warning, not an error, if the target
+    exceeds what's possible for the categories picked -- the search still
+    runs and returns the max available
+  - Optional API key field: overrides the .env key for this run only,
+    never stored or logged -- lets someone other than the developer use
+    the app with their own key/quota
   - "Run search" button: calls the existing search_places /
     check_website / score_lead functions directly (no API key ever
     shown or logged), shows a progress spinner, then saves a CSV to
     leads/ exactly like the CLI does
   - Clear warning near the button showing how many requests this run
     will use, so nobody accidentally blows the daily demo quota
+  - Email lookup: Google Places has no email field, so for each lead
+    that has a website, visit that business's own site (never Google
+    Maps/Yelp/any search engine -- this doesn't conflict with rule 3)
+    and look for a mailto: link or an email pattern on the page.
+    Best-effort only, silently skipped on any error, capped at ~50 sites
+    per run to keep searches fast
 
   ### Tab 2: Browse Results
   - Sidebar: pick a CSV from the `leads/` folder (newest first)
@@ -234,8 +244,9 @@ Done when: after restarting Claude Code, `/agents` shows both agents.
   - Bar chart: number of leads per category
   - Table of filtered leads sorted by score (highest first), showing
     name, address, category, website_status, phone, rating, reviews,
-    score, website, maps_url (rating/reviews may be blank -- the demo
-    key often doesn't return them)
+    score, website, email, maps_url (rating/reviews may be blank -- the
+    demo key often doesn't return them; email may be blank -- best-effort
+    lookup, not every site publishes one)
   - Make website and maps_url clickable links
   - Download buttons for the filtered table: CSV and real .xlsx (via
     openpyxl)

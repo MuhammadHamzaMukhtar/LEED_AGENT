@@ -18,6 +18,7 @@ import os
 import re
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from places_client import PlacesApiError, search_places
@@ -284,6 +285,40 @@ def _simple_website_status(website: str | None) -> str:
     return "OK"
 
 
+EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+EMAIL_IGNORE_DOMAINS = ("sentry.io", "example.com", "wixpress.com", "godaddy.com")
+
+
+def extract_email(website: str | None) -> str | None:
+    """Best-effort: visit a business's OWN website (not Google/Yelp/any
+    search engine -- just the lead's own site) and look for a contact
+    email. Google Places never returns email addresses, so this is the
+    only way to get one. Many small-business sites won't have one; that's
+    expected, not a bug. Fails silently (returns None) on any error so one
+    slow/broken site never breaks the whole search."""
+    if not website:
+        return None
+    href = website if website.startswith(("http://", "https://")) else f"https://{website}"
+    try:
+        response = requests.get(
+            href, timeout=5, allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (LeadFinderBot/1.0)"},
+        )
+    except requests.exceptions.RequestException:
+        return None
+    if response.status_code != 200:
+        return None
+
+    html = response.text[:50_000]  # don't parse huge pages
+    mailto_matches = re.findall(r'mailto:([^"\'?&\s]+)', html, re.IGNORECASE)
+    candidates = mailto_matches or EMAIL_PATTERN.findall(html)
+    for candidate in candidates:
+        candidate = candidate.strip().lower()
+        if not any(candidate.endswith(f"@{d}") or d in candidate for d in EMAIL_IGNORE_DOMAINS):
+            return candidate
+    return None
+
+
 def run_real_search(
     location_label: str, categories: list[str], request_budget: int,
     api_key: str | None = None,
@@ -341,12 +376,13 @@ def run_real_search(
                 "reviews": reviews,
                 "score": _score_lead(status, phone or "", rating, reviews),
                 "website": website or "",
+                "email": "",  # filled in afterwards by the caller (visits each site)
                 "maps_url": place.get("maps_url") or "",
             })
 
     columns = [
         "name", "address", "category", "website_status", "phone",
-        "rating", "reviews", "score", "website", "maps_url",
+        "rating", "reviews", "score", "website", "email", "maps_url",
     ]
     df = pd.DataFrame(rows, columns=columns)
     return df, requests_used, errors
@@ -360,7 +396,7 @@ def slugify(text: str) -> str:
 
 EMPTY_LEADS = pd.DataFrame(columns=[
     "name", "address", "category", "website_status", "phone",
-    "rating", "reviews", "score", "website", "maps_url",
+    "rating", "reviews", "score", "website", "email", "maps_url",
 ])
 
 if "search_results" not in st.session_state:
@@ -445,45 +481,47 @@ with tab_search:
         categories_count = max(
             len(chosen_categories) + (1 if custom_category else 0), 1
         )
-        full_requests = categories_count * 3  # Google's own per-category cap
+        max_possible_leads = categories_count * 60  # Google's hard cap per category+location
 
-        st.markdown("**Search depth**")
-        depth_choice = st.segmented_control(
-            "Search depth",
-            options=["Quick", "Standard", "Thorough", "Full"],
+        st.markdown("**Target leads**")
+        target_leads = st.number_input(
+            "Target number of leads",
+            min_value=0, max_value=300, step=10, value=0,
             label_visibility="collapsed",
+            help="e.g. 60 or 100. Google allows at most 60 per category -- "
+                 "add more categories to reach a higher total.",
         )
-        REQUEST_BUDGET = {"Quick": 3, "Standard": 5, "Thorough": 10, "Full": full_requests}
-        request_limit = REQUEST_BUDGET.get(depth_choice or "Standard", 5)
+        # 20 results per request; cap at Google's 3-requests-per-category limit.
+        request_limit = min(categories_count * 3, max(1, math.ceil(target_leads / 20))) if target_leads else 0
         st.caption(
-            f"Quick ≈ 3 requests · Standard ≈ 5 requests · "
-            f"Thorough ≈ 10 requests · Full = every result Google has "
-            f"for your categories (currently {full_requests} requests, "
-            f"{categories_count} categor{'y' if categories_count == 1 else 'ies'} "
-            f"× 3, Google's own per-category cap)"
+            f"Up to **{max_possible_leads} leads** possible for "
+            f"**{categories_count} categor{'y' if categories_count == 1 else 'ies'}** "
+            f"(Google allows at most 60 per category). "
+            f"{f'Target {int(target_leads)} → up to {request_limit} requests.' if target_leads else ''}"
         )
+        if target_leads and target_leads > max_possible_leads:
+            st.warning(
+                f"Your target of {int(target_leads)} is above the "
+                f"{max_possible_leads}-lead maximum for {categories_count} "
+                f"categor{'y' if categories_count == 1 else 'ies'}. Add more "
+                f"categories to reach a higher total -- this search will still "
+                f"run and return up to {max_possible_leads}."
+            )
 
         if not city:
             st.info("Select a city to continue.")
         elif not chosen_categories and not custom_category:
             st.info("Pick at least one category to continue.")
-        elif not depth_choice:
-            st.info("Choose a search depth to continue.")
+        elif not target_leads:
+            st.info("Enter a target number of leads (e.g. 60) to continue.")
         else:
             location_label = f"{town + ', ' if town else ''}{city}, {country}"
-            if depth_choice == "Full":
-                st.info(
-                    f"**Full** will fetch every business Google returns for "
-                    f"**{categories_count} categor{'y' if categories_count == 1 else 'ies'}** "
-                    f"in **{location_label}** — up to **{request_limit} requests**, "
-                    f"nothing held back."
-                )
-            else:
-                st.info(
-                    f"This search will use up to **{request_limit} requests** across "
-                    f"**{categories_count} categor{'y' if categories_count == 1 else 'ies'}** "
-                    f"in **{location_label}**."
-                )
+            st.info(
+                f"This search will target **{int(target_leads)} leads** using up "
+                f"to **{request_limit} requests** across "
+                f"**{categories_count} categor{'y' if categories_count == 1 else 'ies'}** "
+                f"in **{location_label}**."
+            )
 
             if st.button("Run search", type="primary"):
                 all_categories = chosen_categories + ([custom_category] if custom_category else [])
@@ -495,6 +533,24 @@ with tab_search:
 
                 for message in errors:
                     st.error(message)
+
+                EMAIL_LOOKUP_CAP = 50  # visiting sites is slow; cap so a big search doesn't hang
+                with_website = results[results["website"] != ""] if len(results) else results
+                if len(with_website) > 0:
+                    to_check = with_website.head(EMAIL_LOOKUP_CAP)
+                    progress = st.progress(0.0, text="Looking up email addresses on business websites...")
+                    for i, (row_index, row) in enumerate(to_check.iterrows()):
+                        results.loc[row_index, "email"] = extract_email(row["website"]) or ""
+                        progress.progress(
+                            (i + 1) / len(to_check),
+                            text=f"Looking up email addresses... {i + 1}/{len(to_check)}",
+                        )
+                    progress.empty()
+                    if len(with_website) > EMAIL_LOOKUP_CAP:
+                        st.caption(
+                            f"Email lookup limited to the first {EMAIL_LOOKUP_CAP} "
+                            f"websites to keep this search from taking too long."
+                        )
 
                 today = datetime.date.today().isoformat()
                 st.session_state["search_results"] = results
@@ -618,12 +674,13 @@ with tab_browse:
         display_df["status"] = display_df["website_status"].apply(status_pill_html)
         display_df = display_df[[
             "name", "address", "category", "status", "phone",
-            "rating", "reviews", "website", "maps_url",
+            "rating", "reviews", "website", "email", "maps_url",
         ]]
         display_df = display_df.rename(columns={
             "name": "Name", "address": "Address (exact)", "category": "Category",
             "status": "Status", "phone": "Phone", "rating": "Rating",
-            "reviews": "Reviews", "website": "Website", "maps_url": "Google Maps",
+            "reviews": "Reviews", "website": "Website", "email": "Email",
+            "maps_url": "Google Maps",
         })
 
         table_html = display_df.to_html(
@@ -632,6 +689,7 @@ with tab_browse:
                 "Rating": lambda r: f"{r:.1f} / 5" if pd.notna(r) else "—",
                 "Reviews": lambda r: f"{int(r)}" if pd.notna(r) else "—",
                 "Phone": lambda p: p if p else "—",
+                "Email": lambda e: e if e else "—",
                 "Website": website_link_html,
                 "Google Maps": maps_link_html,
             },
