@@ -285,8 +285,52 @@ def _simple_website_status(website: str | None) -> str:
     return "OK"
 
 
-EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-EMAIL_IGNORE_DOMAINS = ("sentry.io", "example.com", "wixpress.com", "godaddy.com")
+# Used to scan raw page text (not mailto: links) for an email-shaped
+# string. Restricted to real TLDs on purpose -- an unrestricted pattern
+# was matching things like "logo@2x.png" (a CSS retina-image filename) as
+# a fake "email", which is what showed up as junk/dummy data before.
+BASIC_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+REAL_TLDS = (
+    "com", "co.uk", "org", "org.uk", "net", "io", "uk", "me", "biz",
+    "info", "shop", "us", "ca", "eu",
+)
+ASSET_EXTENSIONS = (
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "css", "js", "woff",
+    "woff2", "ttf", "eot", "map", "json", "xml", "pdf",
+)
+EMAIL_IGNORE_DOMAINS = (
+    "sentry.io", "example.com", "wixpress.com", "godaddy.com",
+    "schema.org", "w3.org", "gstatic.com", "googleapis.com",
+    "doubleclick.net", "cloudflare.com", "fontawesome.com",
+    "wordpress.com", "wp.com", "cloudfront.net", "sentry-cdn.com",
+)
+EMAIL_IGNORE_LOCALPARTS = ("noreply", "no-reply", "donotreply", "example", "test")
+
+
+def _tld_of(domain: str) -> str:
+    """Return the last one or two dot-separated labels of a domain, e.g.
+    "example.co.uk" -> "co.uk", "example.com" -> "com"."""
+    parts = domain.rsplit(".", 2)
+    two_part = ".".join(parts[-2:])
+    return two_part if two_part in REAL_TLDS else parts[-1]
+
+
+def _is_real_email(candidate: str) -> bool:
+    """Reject anything that isn't a plausible business email: no @, no
+    trailing dot, an ignored domain/local-part, or a domain whose last
+    segment is actually an asset file extension (not a real TLD)."""
+    if "@" not in candidate or candidate.count("@") != 1:
+        return False
+    local_part, domain = candidate.split("@")
+    if not local_part or not domain or "." not in domain:
+        return False
+    if local_part.lower() in EMAIL_IGNORE_LOCALPARTS:
+        return False
+    if any(domain == d or domain.endswith(f".{d}") for d in EMAIL_IGNORE_DOMAINS):
+        return False
+    if domain.rsplit(".", 1)[-1] in ASSET_EXTENSIONS:
+        return False
+    return True
 
 
 def extract_email(website: str | None) -> str | None:
@@ -310,11 +354,21 @@ def extract_email(website: str | None) -> str | None:
         return None
 
     html = response.text[:50_000]  # don't parse huge pages
-    mailto_matches = re.findall(r'mailto:([^"\'?&\s]+)', html, re.IGNORECASE)
-    candidates = mailto_matches or EMAIL_PATTERN.findall(html)
-    for candidate in candidates:
-        candidate = candidate.strip().lower()
-        if not any(candidate.endswith(f"@{d}") or d in candidate for d in EMAIL_IGNORE_DOMAINS):
+
+    # mailto: links are a strong, deliberate signal -- trust any real TLD.
+    for raw in re.findall(r'mailto:([^"\'?&\s]+)', html, re.IGNORECASE):
+        candidate = raw.strip().lower()
+        if _is_real_email(candidate):
+            return candidate
+
+    # Fall back to scanning page text, but only accept common real TLDs,
+    # to avoid matching CSS/JS asset names or tracking-script domains.
+    for raw in BASIC_EMAIL_RE.findall(html):
+        candidate = raw.strip().lower()
+        if not _is_real_email(candidate):
+            continue
+        domain = candidate.split("@", 1)[1]
+        if _tld_of(domain) in REAL_TLDS:
             return candidate
     return None
 
